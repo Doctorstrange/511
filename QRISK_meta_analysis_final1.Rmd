@@ -1,0 +1,1112 @@
+---
+title: "QRISK_meta_analysis"
+output:
+  pdf_document:
+    latex_engine: xelatex
+    keep_tex: true
+  html_document:
+    df_print: paged
+header-includes:
+- \usepackage{fvextra}
+- \DefineVerbatimEnvironment{Highlighting}{Verbatim}{breaklines,breakanywhere,commandchars=\\\{\}}
+---
+
+install.packages("readxl") install.packages("meta") install.packages("metafor") install.packages("dplyr") install.packages("ggplot2")
+
+# IMPORT DATA FROM EXCEL FILE
+
+```{r}
+# Inport the data from the xcel fille
+# Load package
+library(readxl)
+
+# Google Drive file ID (uploaded .xlsx, not a native Sheet)
+sheet_id <- "1yJQ9Pd9yODPqh9ewfctuPeNe1Gdx7mbg"
+url <- paste0("https://drive.google.com/uc?export=download&id=", sheet_id)
+
+tmp <- tempfile(fileext = ".xlsx")
+download.file(url, tmp, mode = "wb")     # mode = "wb" is essential
+df <- read_excel(tmp)
+
+# View first few rows
+head(df)
+
+# Check structure
+str(df)
+
+# Check column names
+names(df)
+```
+
+CLEAN THE IMPORTED DATA BY REMOVING ANY EMPTY COLUMNS THE RECHECK DATA
+
+```{r}
+# Remove columns that are entirely NA
+df <- df[, colSums(!is.na(df)) > 0]
+
+# Check dimensions
+dim(df)
+
+# Check column names
+names(df)
+```
+
+REMOVE COMPLETELY EMPTY ROWS
+
+```{r}
+# Remove rows where all values are NA
+library(dplyr)
+df <- df %>%
+  filter(!if_all(everything(), is.na))
+```
+
+CHECK THE FORMAT OF INPUTED CONFIDENCE INTERVAL IN ORDER TO DEVICE PLAN TO PARSE IT
+
+```{r}
+# check CI format
+df$AUC[!is.na(df$AUC)][1:20]
+```
+
+# SPLIT CONFIDENCE INTERVAL
+
+CLEAN AND EXTRACT NUMERICAL VALUES FROM AUC COLUMN
+
+```{r}
+# extract CI into lower and upper column 
+library(stringr) # Provides fuction for manipulating text
+library(dplyr) # provides function for manipulating data
+
+df <- df %>% # use the pipe operator to pass the result of manipulation and passes it to the right
+  mutate( # create new columns while retaining exisiting ones
+    AUC_clean = str_squish(AUC), #remove unnecessary spaces from AUC and store it in new variable
+
+    Estimate = str_extract(AUC_clean, "^\\d*\\.?\\d+") |> as.numeric(), # creates a variabl, Estimate and store the first number seen in the AUC_clean is it as a number
+
+    LowerCI = str_match( # Using regular expression extract the lower confidence interval and store it in LowerCI column
+      AUC_clean,
+      "\\(\\s*(\\d*\\.?\\d+)\\s*[–-]\\s*(\\d*\\.?\\d+)\\s*\\)"
+    )[,2] |> as.numeric(),
+
+    UpperCI = str_match( # Using regular expression extract the Upper confidence interval and store it in UpperCI column
+      AUC_clean,
+      "\\(\\s*(\\d*\\.?\\d+)\\s*[–-]\\s*(\\d*\\.?\\d+)\\s*\\)"
+    )[,3] |> as.numeric()
+  )
+```
+
+```{r}
+# view all the new extracted data
+df %>%
+  select(AUC, Estimate, LowerCI, UpperCI) %>%
+  head(30)
+```
+
+## HANLEY & MCNEIL (1982) APPROXIMATION
+
+```{r}
+# HANLEY & MCNEIL (1982) APPROXIMATION
+library(dplyr)
+
+df_hm <- df # create a working copy
+
+df_hm <- df_hm %>%
+  mutate( # create a new column
+    n1 = as.numeric(Events), # store the information in the Event column in n1 as number
+    n0 = Sample_size - n1, # compute the number of none events by subtracting event from sample size
+    Q1 = Estimate / (2 - Estimate), # compute for Q1
+    Q2 = 2 * Estimate^2 / (1 + Estimate), # compute for Q2
+    HM_se    = sqrt((Estimate * (1 - Estimate) + # h and M original variance estimator
+                     (n1 - 1) * (Q1 - Estimate^2) +
+                     (n0 - 1) * (Q2 - Estimate^2)) / (n1 * n0)),
+    HM_lower = pmax(0, Estimate - 1.96 * HM_se), # calcualte lower confidence interval
+    HM_upper = pmin(1, Estimate + 1.96 * HM_se) # calculate higher confidence interval
+  )
+
+# Output the values that where affected by the approximation
+hm_table <- df_hm %>% # what would be
+  filter(Confidence_interval != "Reported") %>% # isolate row that currently do not have reported confidence interval
+  transmute(
+    Study    = Index, # indentify the row by the index values
+    Events   = n1,
+    AUC      = round(Estimate, 3),
+    `95% CI` = sprintf("%.3f – %.3f", HM_lower, HM_upper)
+  )
+
+print(as.data.frame(hm_table), row.names = FALSE)
+```
+
+# CALCULATE STANDARD ERROR
+
+```{r}
+# STANDARD ERROR
+df$SE <- (df$UpperCI - df$LowerCI) / 3.92 
+```
+
+```{r}
+# VERIFY NO VLAUES ARE MISSING
+sum(is.na(df$SE))
+summary(df$SE)
+```
+
+### SPLIT DATA (df_all, df_primary)
+
+df_all : dataframe containing all included studies
+
+df_primary : dataframe containing only studies included in the primary pool
+
+```{r}
+# Load the package
+library(writexl)
+```
+
+```{r}
+# create df with all data including QRISK
+df_all <- df
+
+nrow(df_all)
+head(df_all)
+```
+
+```{r}
+# Export the dataframe
+write_xlsx(df_all, "df_all.xlsx")
+```
+
+Extracting the primary pool studies
+
+```{r}
+# create dataframe for primary pooled AUC
+# keep only studies marked for inclusion
+df_primary <- df[df$Include == 1, ]
+
+# keep only studies marked for meta - analysis
+df_primary <- df_primary[df_primary$Metanalysis == 1, ]
+
+# remove hellers k studies
+df_primary <- df_primary[df_primary$Dscrimination != "Heller’s K", ]
+
+df_primary <- df_primary[df_primary$Outcome_type == "Appropriate", ]
+
+# View first rows
+nrow(df_primary)
+str(df_primary$Index)
+```
+
+TRANSFORM EACH C-STATISTIC TO LOGIT SCALE FOR DEBRAY'S ADHERENCE
+
+```{r}
+# transform the AUC values from their original probability scale (0–1) to the logit scale and calculates the standard error (SE) on the logit scale.
+library(dplyr)
+
+df_primary_logit <- df_primary %>%
+  mutate(
+    logit_c  = log(Estimate / (1 - Estimate)), # create logit transformed AUC
+    logit_lb = log(LowerCI  / (1 - LowerCI)),
+    logit_ub = log(UpperCI  / (1 - UpperCI)),
+    se_logit = (logit_ub - logit_lb) / (2 * 1.96)   # derive the standard error of the logit c-statistic 
+  )
+```
+
+```{r}
+# Export the dataframe
+write_xlsx(df_primary_logit, "df_primary-logit.xlsx")
+```
+
+```{r}
+# TO CHECK
+# output unique studies for primary metanalysis
+library(dplyr)
+library(stringr)
+
+# Eligible cohorts
+eligible <- df_primary_logit %>%
+  filter(Metanalysis == 1) %>%
+  mutate(
+    StudyID = str_extract(as.character(Index), "\\d+")
+  )
+
+nrow(eligible)
+
+
+cat(
+  "Number of unique studies:",
+  n_distinct(eligible$StudyID),
+  "\n"
+)
+
+eligible %>%
+  select(Index, Title) %>%
+  print(n = Inf)
+```
+
+Count the number of arms contributed by each study
+
+```{r}
+df_primary_logit %>%
+  mutate(StudyID = str_extract(as.character(Index), "^[0-9]+")) %>% # CONVERT index to character and then pick out characters from the begining until you find a character that is not a number and store that in studyID
+  count(StudyID, name = "n_arms") %>% # get the frequency of each number and store in the column n_arms
+  arrange(desc(n_arms)) %>% # arrange the result in decending order
+  print(n = Inf) # print all rows
+```
+
+# META-ANALYSIS STARTS
+
+```{r}
+# LOAD META PACKAGE
+library(meta)
+```
+
+```{r}
+# INVERSE VARIANCE RANDOM EFFECT Using non logit estimates
+primary_auc <- metagen( # use metagen package to combine AUC estimates and store in created object
+  TE = Estimate, # effect estimate gotten from Estimate column
+  seTE = SE, # get the treatment effect standard error from the SE column
+  studlab = Author, # use the Author column to identify studies
+  data = df_primary, # dataset that contains all the data
+  sm = "AUC", # specify the type of summary measure bein meta-analyzed as AUC
+  method.tau = "REML", # how the between study variance is estimated
+  method.random.ci = "HK" # method for deriving the confidence interval
+)
+summary(primary_auc)
+```
+
+```{r}
+# POOLED ESTIMATE ON LOGIT SCALE
+library(meta)
+
+primary_logit <- metagen(
+  TE               = logit_c, # logit effect estimate gotten from logit_c column
+  seTE             = se_logit, # get the logit treatment effect standard error from the Se_logit column
+  studlab          = Author, # use the Author column to identify studies
+  data             = df_primary_logit, # dataset that contains all the logit transformed data
+  method.tau       = "REML",# how the between study variance is estimated
+  method.random.ci = "HK", # method for deriving the confidence interval
+  prediction       = TRUE # report 95% prediction interval
+)
+summary(primary_logit)
+```
+
+```{r}
+# invert pooled value and intervals with inverse-logit
+plogis(primary_logit$TE.random)      #perform inverse logit transformation on the pooled estimate
+plogis(c(primary_logit$lower.random, primary_logit$upper.random))# perform inverse logit transformation on the confidence interval   
+plogis(c(primary_logit$lower.predict, primary_logit$upper.predict)) # perform inverse logit transformation in the prediction interval
+```
+
+```{r}
+# USING METAMISC LIBRARY AS STATED IN DEBRAY
+library(metamisc) # debrey specific package for meta analysis
+
+val <- valmeta( # store result of the velmeta function in the val object
+  cstat      = df_primary_logit$Estimate,   # RAW c-statistic provided as logit trransformation is done internally
+  cstat.cilb = df_primary_logit$LowerCI,  # RAW lower CI
+  cstat.ciub = df_primary_logit$UpperCI, # RAW upper CI
+  slab       = df_primary_logit$Index, # use index as the study label
+  method     = "REML" # how the between study variance is estimated
+)
+val
+```
+
+```{r}
+# FORREST PLOT VABOSE
+library(meta)
+
+primary_logit <- metagen(
+  TE               = logit_c, # logit effect estimate gotten from logit_c column
+  seTE             = se_logit, # get the logit treatment effect standard error from the Se_logit column
+  studlab          = Author, # use the Author column to identify studies
+  data             = df_primary_logit, # dataset that contains all the logit transformed data
+  sm               = "PLOGIT", # tells meta the scale is logit-transformed proportion
+  backtransf       = TRUE, # covert logit values to translatable values
+  method.tau       = "REML", # how the between study variance is estimated
+  method.random.ci = "HK", # method for deriving the confidence interval
+  prediction       = TRUE # report 95% prediction interval
+)
+
+meta::forest(primary_logit, xlab = "c-statistic") # use forest function in the meta package
+```
+
+```{r}
+# PLOT FORREST PLOT
+meta::forest(primary_logit,
+             xlab      = "c-statistic",
+             xlim      = c(0.4, 1),
+             at        = c(0.5, 0.6, 0.7, 0.8, 0.9, 1.0),
+             leftcols  = c("studlab"),
+             leftlabs  = c("Study"),
+             rightcols = c("effect", "ci", "w.random"),
+             rightlabs = c("c-statistic", "95% CI", "Weight"),
+             common    = FALSE,
+             print.I2  = TRUE,
+             print.tau2 = TRUE)
+```
+
+## INFLUENCE ANALYSIS
+
+```{r}
+#Influenece analysis to be done on logit transformed estimate
+# result will be back transformed for translation
+# staring with leave-one-out sensitivity analysis
+# If droppping a study shifts the pooled c-statistic by >0.05 the result is not stable
+library(meta)
+loo <- metainf(primary_logit, pooled = "random") # leave one out
+loo
+meta::forest(loo, backtransf = TRUE, xlab = "c-statistic (leave-one-out)")
+```
+
+```{r}
+library(metafor)
+
+# attach real study labels so plots use them instead of row numbers
+rma_meta <- rma( # random effect meta analysis
+  yi = logit_c, #observed effect
+  sei = se_logit, # each studies precision and weight
+  data = df_primary_logit, # location of variables
+         method = "REML", # methos for calculating study estimate
+  slab = df_primary_logit$Index)
+
+
+inf <- influence(rma_meta) # calcualte the influence statistic for every study
+
+print(inf$inf) 
+
+plot(inf) # plot influence diagnostics
+# x-axis = each study's contribution to overall heterogeneity
+# y-axis = its influence on the pooled estimate
+# Build the study key from the model's data, in row order (Baujat labels by row position)
+study_key <- paste0(
+  seq_len(nrow(df_primary_logit)), # extract the number of rows from the dataframe
+  " = ", 
+  df_primary_logit$Author) # author name would be combined with row number
+
+plot_settings <- par( # save the graphic setting inside
+  mar = c(5, 4, 2, 20), # control lot margins to create better spacing
+  xpd = NA) # allow text outside normal plotting region
+
+baujat( # create baugat plot
+  rma_meta,
+  xlab = "Contribution to overall heterogeneity (Q)",
+  ylab = "Influence on pooled c-statistic",
+  main = ""
+)
+
+usr <- par("usr") # place study key outside the graph for identificarion
+
+text(
+  usr[2] + 0.2,
+  usr[4],
+  labels = paste(
+    c("Study key", "", study_key), 
+    collapse = "\n"),
+  adj = c(0, 1),
+  cex = 0.8
+)
+
+par(plot_settings)
+
+
+
+```
+
+```{r}
+# check difference in two dataframe 
+library(dplyr)
+df_all_only <- anti_join( # keep only rows in first table that do not have a match in the second table
+  df_all, # searching table
+  df_primary, # reference table
+  by = 'Author') # compare the two dataframe using the Author column
+print(df_all_only) # print result
+```
+
+## SUBGROUP ANALYSIS - Disease group
+
+```{r}
+library(meta)
+
+primary_subgroup_disease <- metagen(
+  TE               = logit_c, # use logit estimates
+  seTE             = se_logit, # use logit SE
+  studlab          = Author, # identify by author
+  data             = df_primary_logit, # find all in this dataframe
+  sm               = "PLOGIT", # inform that the estimate are in logit
+  method.tau       = "REML", # how to calculate the between study variance
+  method.random.ci = "HK", # how to calcualte the CI 
+  subgroup         = Disease_Group, # split the studies according to disease group
+  tau.common       = TRUE, # make all studeis in the group share the same tau square by pooling the estimates as few numbers of study would make seperate tau unstable
+  prediction       = TRUE # calculate the prediction interval for each group
+)
+
+summary(primary_subgroup_disease)
+```
+
+FORREST PLOT - SUBGROUP ANALYSIS - Disease group
+
+```{r}
+meta::forest(
+  primary_subgroup_disease,
+  backtransf = TRUE,
+  xlab = "c-statistic",
+  xlim = c(0.5, 1),
+  at = c(0.5, 0.6, 0.7, 0.8, 0.9, 1.0),
+  leftcols  = c("studlab", "Sample_size", "Events"),
+  leftlabs  = c("Study", "N", "CVD events"),
+  rightcols = c("effect", "ci"),
+  rightlabs = c("c-statistic", "95% CI"),
+  common = FALSE,
+  test.subgroup = TRUE,
+  print.subgroup.name = FALSE,
+  addrows.below.overall = 5,
+  colgap = "8mm",
+  colgap.left = "6mm",
+  colgap.forest.left = "10mm",
+  fontsize = 11
+)
+```
+
+```{r}
+# Between-group difference test
+primary_subgroup_disease$Q.b.random      # Q between random effect
+primary_subgroup_disease$df.Q.b          # degree of freedom
+primary_subgroup_disease$pval.Q.b.random # p-value
+
+# Per-subgroup back-transformed estimates
+data.frame(
+  disease = primary_subgroup_disease$subgroup.levels,
+  k       = primary_subgroup_disease$k.w,
+  c_stat  = plogis(primary_subgroup_disease$TE.random.w),
+  lower   = plogis(primary_subgroup_disease$lower.random.w),
+  upper   = plogis(primary_subgroup_disease$upper.random.w),
+  I2      = primary_subgroup_disease$I2.w
+)
+```
+
+## SUBGROUP ANALYSIS BY QRISK VERSION
+
+```{r}
+# See version information
+table(df_primary_logit$QRISK_Version, useNA = "ifany")
+```
+
+```{r}
+# subgroup analysis QRISK version
+library(meta)
+
+primary_subgroup_version <- metagen(
+  TE               = logit_c,
+  seTE             = se_logit,
+  studlab          = Author,
+  data             = df_primary_logit,
+  sm               = "PLOGIT",
+  method.tau       = "REML",
+  method.random.ci = "HK",
+  subgroup         = QRISK_Version,      
+  tau.common       = TRUE,
+  prediction       = TRUE
+)
+
+summary(primary_subgroup_version)
+```
+
+```{r}
+# Extract the between-group test and per-version estimate
+# Between-group difference 
+primary_subgroup_version$Q.b.random
+primary_subgroup_version$df.Q.b
+primary_subgroup_version$pval.Q.b.random
+
+# Per-version back-transformed estimates
+data.frame(
+  version = primary_subgroup_version$subgroup.levels,
+  k       = primary_subgroup_version$k.w,
+  c_stat  = plogis(primary_subgroup_version$TE.random.w),
+  lower   = plogis(primary_subgroup_version$lower.random.w),
+  upper   = plogis(primary_subgroup_version$upper.random.w),
+  I2      = primary_subgroup_version$I2.w
+)
+```
+
+```{r}
+# widen the bottom margin before plotting
+par(mar = c(8, 4, 2, 2))   # bottom, left, top, right — more bottom space
+
+meta::forest(primary_subgroup_version,
+             backtransf = TRUE,
+             xlab       = "c-statistic",
+             xlim       = c(0.5, 1),
+             at         = c(0.5, 0.6, 0.7, 0.8, 0.9, 1.0),
+             leftcols   = "studlab", leftlabs = "Study",
+             rightcols  = c("effect", "ci"), rightlabs = c("c-statistic", "95% CI"),
+             common          = FALSE,
+             hetstat         = FALSE,   
+             test.subgroup   = TRUE,
+             overall.hetstat = TRUE,
+             fontsize        = 9,          
+             spacing         = 1.1)
+```
+
+```{r}
+# subgroup summary
+library(ggplot2)
+sg <- data.frame(
+  group = primary_subgroup_disease$subgroup.levels,
+  k     = primary_subgroup_disease$k.w,
+  est   = plogis(primary_subgroup_disease$TE.random.w),
+  lo    = plogis(primary_subgroup_disease$lower.random.w),
+  hi    = plogis(primary_subgroup_disease$upper.random.w))
+
+ggplot(sg, aes(x = est, y = reorder(group, est))) +
+  geom_vline(xintercept = plogis(primary_logit$TE.random),
+             linetype = 2, colour = "grey40") +
+  geom_errorbarh(aes(xmin = lo, xmax = hi), height = 0.18) +
+  geom_point(aes(size = k)) +
+  scale_size_continuous(range = c(2, 5), name = "Arms (k)") +
+  labs(x = "Pooled c-statistic (95% CI)", y = NULL) +
+  theme_minimal(base_size = 11)
+```
+
+## PAIRED QRISK VERSION COMPARISM
+
+```{r}
+library(dplyr)
+library(stringr)
+library(tidyr)
+
+# Extract the six paired arms from df_all
+paired <- df_all %>% # create dataset of paired studies
+  filter(Index %in% c("19a", "19b", "26a", "26b", "29a", "29b")) %>% # select the paired studeis
+  mutate( # add new columns to existing ones
+    cohort  = str_extract(Author, "\\d+"),                       # 19, 26, 29
+    version = ifelse(str_detect(Author, "a$"), "QRISK2", "QRISK3")
+  )
+
+# VERIFY the a/b version mapping against the data's own version field
+paired %>% select(Author, cohort, version, QRISK_Version, Estimate, LowerCI, UpperCI)
+```
+
+```{r}
+library(dplyr)
+library(tidyr)
+library(readr)
+
+# Build the paired set
+paired <- df_all %>%
+  filter(Index %in% c("19a","19b","26a","26b","29a","29b")) %>%
+  mutate(
+    Index   = trimws(Index), # trim whitespace from the index
+    cohort  = parse_number(Index), # extract the number part from the index
+    version = QRISK_Version # store the qrisk version in version
+  )
+
+# verify 6 rows, each cohort has one QRISK2 and one QRISK3
+print(count(paired, cohort, version))
+
+# Logit-transform each arm c-statistic
+paired <- paired %>%
+  mutate( # create column for each new logit transformed variable
+    logit_c  = log(Estimate / (1 - Estimate)),
+    logit_lb = log(LowerCI  / (1 - LowerCI)),
+    logit_ub = log(UpperCI  / (1 - UpperCI)),
+    se_logit = (logit_ub - logit_lb) / (2 * 1.96)
+  )
+
+# Reshape to one row per cohort, QRISK2 and QRISK3 side by side
+wide <- paired %>%
+  select(cohort, version, Estimate, logit_c, se_logit) %>%
+  pivot_wider( # convert to data to wide form
+    id_cols     = cohort,
+    names_from  = version,
+    values_from = c(Estimate, logit_c, se_logit) # variables to be widened
+  )
+
+print(names(wide))
+
+# Within-cohort difference (QRISK3 - QRISK2)
+wide <- wide %>%
+  mutate(
+    delta_logit    = logit_c_QRISK3 - logit_c_QRISK2,
+    delta_cstat    = Estimate_QRISK3 - Estimate_QRISK2,
+    se_delta_indep = sqrt(se_logit_QRISK3^2 + se_logit_QRISK2^2)   # SE assuming independence
+  )
+
+# Present the paired comparison
+wide %>%
+  transmute( 
+    Cohort                = cohort,
+    `QRISK2 c`            = round(Estimate_QRISK2, 3),
+    `QRISK3 c`            = round(Estimate_QRISK3, 3),
+    `Delta c (3-2)`       = round(delta_cstat, 3),
+    `Delta logit (3-2)`   = round(delta_logit, 3),
+    `SE (indep, overest)` = round(se_delta_indep, 3)
+  )
+```
+
+```{r}
+# check the average improvement of discrimination between 3 and 2
+mean_delta_logit <- mean(wide$delta_logit)
+cat("Mean within-cohort logit difference (QRISK3 - QRISK2):",
+    round(mean_delta_logit, 4), "\n")
+```
+
+## SUBGROUP ANALYSIS (PROBAST)
+
+```{r}
+# Which column holds the overall PROBAST ROB verdict, and how is it coded?
+table(df_primary_logit$Overall, useNA = "ifany")
+```
+
+```{r}
+# ROB SUBGROUP ANALYSIS
+library(meta)
+
+primary_subgroup_rob <- metagen(
+  TE               = logit_c,
+  seTE             = se_logit,
+  studlab          = Author,
+  data             = df_primary_logit,
+  sm               = "PLOGIT",
+  method.tau       = "REML",
+  method.random.ci = "HK",
+  subgroup         = Overall,    
+  tau.common       = TRUE,
+  prediction       = TRUE
+)
+
+summary(primary_subgroup_rob)
+```
+
+```{r}
+# Between-group test and per-group estimates
+# Between-group difference
+primary_subgroup_rob$Q.b.random
+primary_subgroup_rob$df.Q.b
+primary_subgroup_rob$pval.Q.b.random
+
+# Per-ROB-group back-transformed estimates
+data.frame(
+  rob    = primary_subgroup_rob$subgroup.levels,
+  k      = primary_subgroup_rob$k.w,
+  c_stat = plogis(primary_subgroup_rob$TE.random.w),
+  lower  = plogis(primary_subgroup_rob$lower.random.w),
+  upper  = plogis(primary_subgroup_rob$upper.random.w),
+  I2     = primary_subgroup_rob$I2.w
+)
+```
+
+```{r}
+# FORST PLOT FOR ROB
+par(mar = c(8, 4, 2, 2))
+
+meta::forest(
+  primary_subgroup_rob,
+  backtransf = TRUE,
+  xlab = "c-statistic",
+  xlim = c(0.5, 1),
+  at = c(0.5, 0.6, 0.7, 0.8, 0.9, 1.0),
+
+  leftcols = "studlab",
+  leftlabs = "Study",
+
+  rightcols = c("effect", "ci"),
+  rightlabs = c("c-statistic", "95% CI"),
+
+  common = FALSE,
+
+  hetstat = FALSE,
+  overall.hetstat = TRUE,
+  test.subgroup = TRUE,
+
+  fontsize = 9,
+  spacing = 1.1,
+
+  addrows.below.overall = 2
+)
+```
+
+## SENSITIVITY ANALYSIS DROPING LOW STUDIES
+
+```{r}
+df_lowrob <- df_primary_logit[df_primary_logit$Overall == "LOW", ]
+
+primary_lowrob <- metagen(
+  TE = logit_c, 
+  seTE = se_logit, 
+  studlab = Index, 
+  data = df_lowrob,
+  sm = "PLOGIT", 
+  method.tau = "REML", 
+  method.random.ci = "HK", 
+  prediction = TRUE
+)
+summary(primary_lowrob)
+```
+
+## SENSITIVITY ANALYSIS FOR DISCRIMINATION METRIC TYPE
+
+```{r}
+# CHECK TYPE
+table(df_primary_logit$Dscrimination, useNA = "ifany")
+
+```
+
+```{r}
+# LEAVE OUT ONLY HARRELLS 
+library(meta)
+
+# Keep only the AUC-metric studies (drop the three Harrell's C arms)
+df_auc_only <- df_primary_logit[df_primary_logit$Dscrimination == "AUC", ]
+nrow(df_auc_only) 
+
+sens_auc_only <- metagen(
+  TE               = logit_c,
+  seTE             = se_logit,
+  studlab          = Index,
+  data             = df_auc_only,
+  sm               = "PLOGIT",
+  method.tau       = "REML",
+  method.random.ci = "HK",
+  prediction       = TRUE
+)
+summary(sens_auc_only)
+```
+
+## SUBGROUP ANALYSIS UK vs Non UK
+
+```{r}
+table(df_primary_logit$Country, useNA = "ifany")
+
+```
+
+```{r}
+library(dplyr)
+library(meta)
+
+# Collapse to UK vs non-UK
+df_primary_logit <- df_primary_logit %>%
+  mutate(UK_group = ifelse(Country == "UK", "UK", "Non-UK"))
+
+table(df_primary_logit$UK_group)
+
+primary_subgroup_uk <- metagen(
+  TE               = logit_c,
+  seTE             = se_logit,
+  studlab          = Index,
+  data             = df_primary_logit,
+  sm               = "PLOGIT",
+  method.tau       = "REML",
+  method.random.ci = "HK",
+  subgroup         = UK_group,
+  tau.common       = TRUE,
+  prediction       = TRUE
+)
+summary(primary_subgroup_uk)
+```
+
+## SUGGROUP ANALYSIS - FOLLOW UP
+
+```{r}
+# See the follow-up values across the pool
+df_primary_logit %>%
+  select(Index, Disease_Group, `Follow-Up`, Estimate) %>%
+  arrange(`Follow-Up`) %>%
+  print(n = Inf)
+```
+
+```{r}
+library(dplyr)
+library(meta)
+
+fu_under10 <- c("1", "36", "3", "16", "40", "23")
+
+df_primary_logit <- df_primary_logit %>%
+  mutate(Follow_group = ifelse(Index %in% fu_under10, "Under 10y", "10y or more"))
+
+table(df_primary_logit$FU_group)   #
+
+sens_followup <- metagen(
+  TE = logit_c, 
+  seTE = se_logit, 
+  studlab = Index, 
+  data = df_primary_logit,
+  sm = "PLOGIT", 
+  method.tau = "REML", 
+  method.random.ci = "HK",
+  subgroup = Follow_group, 
+  tau.common = TRUE, 
+  prediction = TRUE
+)
+summary(sens_followup)
+```
+
+## DESCRIPTIVE ANALYSIS - HELLERS K
+
+```{r}
+library(dplyr)
+
+carma <- df_all %>%
+  filter(Index %in% c("5a", "5b", "5c")) %>%
+  select(Index, Disease_Group, Country, Sample_size,
+         Estimate, LowerCI, UpperCI, Dscrimination, `Follow-Up`)
+
+carma
+```
+
+## SENSITIVITY ANALYSIS - CROSS-SECTIONAL
+
+```{r}
+library(dplyr)
+
+# Pulling the candidate cross-sectional surrogate-outcome studies from df_all
+cross_sec <- df_all %>%
+  filter(Outcome_type != "Appropriate") %>%   
+  select(Index, Disease_Group, Outcome_type, Outcome_Description,
+         `Follow-Up`, Estimate, LowerCI, UpperCI, Dscrimination)
+
+cross_sec
+```
+
+```{r}
+library(dplyr)
+
+cross_sec <- df_all %>%
+  filter(Index %in% c("14","18","21","22","28","32","37","27b")) %>% 
+  select(Index, Disease_Group, Outcome_Description, Dscrimination,
+         Estimate, LowerCI, UpperCI, `Follow-Up`, Confidence_interval)
+
+cross_sec
+```
+
+```{r}
+# Discrimination for subclinical carotid atherosclerosis
+library(dplyr)
+library(meta)
+
+plaque <- df_all %>%
+  filter(Index %in% c("14","18","22","28","37","27b")) %>%   # carotid plaque only; 21 & 32 excluded
+  mutate(
+    logit_c  = log(Estimate / (1 - Estimate)),
+    logit_lb = log(LowerCI  / (1 - LowerCI)),
+    logit_ub = log(UpperCI  / (1 - UpperCI)),
+    se_logit = (logit_ub - logit_lb) / (2 * 1.96)
+  )
+
+nrow(plaque) 
+
+pool_plaque <- metagen(
+  TE = logit_c, 
+  seTE = se_logit, 
+  studlab = Index, 
+  data = plaque,
+  sm = "PLOGIT", 
+  method.tau = "REML", 
+  method.random.ci = "HK", 
+  prediction = TRUE
+)
+summary(pool_plaque)
+```
+
+```{r}
+df_primary_logit %>%
+  select(Index, Sample_size, Study_Year, `Follow-Up`
+        ) %>%
+  print(n = Inf)
+```
+
+## SUBGROUP ANALYSIS - MULTI-VS-SINGLE
+
+```{r}
+library(meta)
+
+# First check how the groups split and that the labels are clean
+table(df_primary_logit$`Single_vs_multi-centre`, useNA = "ifany")
+```
+
+```{r}
+primary_subgroup_centre <- metagen(
+  TE               = logit_c,
+  seTE             = se_logit,
+  studlab          = Index,
+  data             = df_primary_logit,
+  sm               = "PLOGIT",
+  method.tau       = "REML",
+  method.random.ci = "HK",
+  subgroup         = `Single_vs_multi-centre`,
+  tau.common       = TRUE,
+  prediction       = TRUE
+)
+summary(primary_subgroup_centre)
+```
+
+```{r}
+data.frame(
+  Q  = primary_subgroup_centre$Q.b.random,
+  df = primary_subgroup_centre$df.Q.b,
+  p  = primary_subgroup_centre$pval.Q.b.random
+)
+
+data.frame(
+  centre = primary_subgroup_centre$subgroup.levels,
+  k      = primary_subgroup_centre$k.w,
+  c_stat = plogis(primary_subgroup_centre$TE.random.w),
+  lower  = plogis(primary_subgroup_centre$lower.random.w),
+  upper  = plogis(primary_subgroup_centre$upper.random.w),
+  I2     = primary_subgroup_centre$I2.w
+)
+
+
+```
+
+# METAREGRESSION
+
+## Event meta regression
+
+```{r}
+library(metafor)
+
+# Log-transform events
+df_primary_logit$log_events <- log(df_primary_logit$Events)
+
+# Refit the primary model in metafor as the reference
+m_base <- rma(
+  yi = logit_c, 
+  sei = se_logit, 
+  data = df_primary_logit, 
+  method = "REML")
+m_base
+# Univariable meta-regression on log(events)
+mr_events <- rma(
+  yi = logit_c, 
+  sei = se_logit,
+  mods = ~ log_events,
+  data = df_primary_logit, 
+  method = "REML")
+
+mr_events
+```
+
+```{r}
+mr_events
+```
+
+### To make the slope interpretation on the c-statistic scale
+
+```{r}
+# Predicted c-statistic across the range of events
+# use the fitted metaregression model to estimate the c-statistic for studies at the event number
+newpts <- data.frame(log_events = log(c(20, 100, 500, 5000, 25000))) # create dataframe for hypothetical moderators/event number
+prediction <- predict( # function to calculate predicted values from fitted model
+  mr_events, # fitted regression model
+  newmods = as.matrix(newpts$log_events), # convert moderator to a matrix to feed to function
+  transf = plogis
+  )
+
+# build result table
+data.frame(events = c(20, 100, 500, 5000, 25000),
+           c_stat = round(prediction$pred, 3),
+           lower  = round(prediction$ci.lb, 3),
+           upper  = round(prediction$ci.ub, 3))
+```
+
+### **Bubble plot** for the figure
+
+```{r}
+regplot(mr_events, 
+        mod = "log_events", # name of relevant data in the model object
+        xlab = "log(number of events)", 
+        ylab = "logit c-statistic",
+        las = 1, # axis label
+        digits = 2, # number of decimal places in the plot
+        bg = "orange")
+
+```
+
+## Event rate - meta regression
+
+```{r}
+df_primary_logit$event_rate <- df_primary_logit$Events / df_primary_logit$Sample_size
+
+mr_rate <- rma(
+  yi = logit_c, 
+  sei = se_logit,
+  mods = ~ event_rate,
+  data = df_primary_logit, 
+  method = "REML")
+
+mr_rate
+```
+
+## Sample Size - meta regression
+
+```{r}
+df_primary_logit$log_n <- log(df_primary_logit$Sample_size)
+
+mr_sample_size <- rma(
+  yi = logit_c, 
+  sei = se_logit,
+  mods = ~ log_n,
+  data = df_primary_logit, 
+  method = "REML")
+
+mr_sample_size
+```
+
+```{r}
+library(meta)
+
+# Build the numbered key from the pooled object (row order = plot order)
+key <- data.frame(
+  No    = seq_along(primary_logit$studlab), # create number sequence
+  Study = primary_logit$studlab,
+  c_stat = round(plogis(primary_logit$TE), 3) # study effect column
+)
+
+# Funnel plot labelled with numbers
+meta::funnel(primary_logit,
+             studlab     = as.character(key$No),# display numbers
+             cex.studlab = 0.7, # font size
+             pos.studlab = 4, # label to the right of each point
+             xlab        = "logit c-statistic",
+             backtransf  = FALSE,
+             col = "orange"
+)
+# Print the mapping to place in the figure caption or legend
+print(key, row.names = FALSE)
+
+# Egger-type test for funnel asymmetry
+metabias(primary_logit, method.bias = "linreg", k.min = 10)
+paste(paste0(key$No, " = ", key$Study), collapse = "; ") # caption for keys
+```
+
+```{r}
+#traffic light plot
+library(dplyr); library(tidyr); library(ggplot2)
+
+rob <- df_primary_logit %>%
+  select(Index, Author, Participants, Predictors2, Outcome3, Analysis, Overall) %>%
+  pivot_longer(c(-Index, -Author), names_to = "Domain", values_to = "Rating") %>%
+  mutate(
+    Domain = recode(Domain, Predictors2 = "Predictors", Outcome3 = "Outcome"),
+    Domain = factor(Domain,
+             levels = c("Participants","Predictors","Outcome","Analysis","Overall")),
+    Rating = factor(toupper(trimws(Rating)), levels = c("LOW","UNCLEAR","HIGH")))
+
+ggplot(rob, aes(x = Domain, y = factor(Author, levels = rev(unique(Author))))) +
+  geom_tile(aes(fill = Rating), colour = "white", linewidth = 0.8) +
+  geom_text(aes(label = recode(as.character(Rating),
+                LOW = "+", UNCLEAR = "?", HIGH = "\u2212")), size = 3.5) +
+  scale_fill_manual(values = c(LOW = "#4DAF4A", UNCLEAR = "#FFD92F", HIGH = "#E41A1C")) +
+  labs(x = NULL, y = "Study", fill = "Risk of bias") +
+  theme_minimal(base_size = 10) +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1))
+```
+
+```{r}
+png("metareg_panel.png", width = 2400, height = 900, res = 200)
+par(mfrow = c(1, 3), mar = c(5, 5, 3, 2))
+regplot(mr_events, mod = "log_events", xlab = "log(events)",
+        ylab = "logit c-statistic", main = "A", bg = "grey")
+regplot(mr_sample_size, mod = "log_n", xlab = "log(sample size)",
+        ylab = "", main = "B", bg = "grey")
+regplot(mr_rate, mod = "event_rate", xlab = "Event rate",
+        ylab = "", main = "C", bg = "grey")
+dev.off()
+```
