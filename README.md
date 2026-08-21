@@ -19,14 +19,14 @@ knitted output, and the intermediate datasets the analysis writes out.
 
 ```
 ├── data/
-│   └── meta_analysis_index5.xlsx      # data extraction sheet (34 validation arms)
+│   └── meta_analysis_index8.xlsx      # data extraction sheet (34 validation arms)
 ├── output/
 │   ├── df_all.xlsx                    # all 34 arms, parsed and cleaned
 │   ├── df_primary.xlsx                # 19 arms in the primary discrimination pool
 │   └── df_primary-logit.xlsx          # primary pool with logit transform and SE
 ├── pdf/
-│   └── QRISK_meta_f1.pdf              # knitted analysis, all output and figures
-├── QRISK_meta_analysis_final1.Rmd     # the analysis
+│   └── QRISK_meta_s1.pdf              # knitted analysis, all output and figures
+├── QRISK_meta_analysis_final4.Rmd     # the analysis
 └── README.md
 ```
 

@@ -21,7 +21,7 @@ install.packages("readxl") install.packages("meta") install.packages("metafor") 
 library(readxl)
 
 # Google Drive file ID (uploaded .xlsx, not a native Sheet)
-sheet_id <- "1yJQ9Pd9yODPqh9ewfctuPeNe1Gdx7mbg"
+sheet_id <- "1NjldJRQ_qM6wM4eAfa2cxahBVpHxiB25"
 url <- paste0("https://drive.google.com/uc?export=download&id=", sheet_id)
 
 tmp <- tempfile(fileext = ".xlsx")
@@ -124,7 +124,7 @@ df_hm <- df_hm %>%
 
 # Output the values that where affected by the approximation
 hm_table <- df_hm %>% # what would be
-  filter(Confidence_interval != "Reported") %>% # isolate row that currently do not have reported confidence interval
+  filter(Confidence_interval == "Approximated") %>% # isolate row that currently do not have reported confidence interval
   transmute(
     Study    = Index, # indentify the row by the index values
     Events   = n1,
@@ -190,6 +190,10 @@ df_primary <- df_primary[df_primary$Outcome_type == "Appropriate", ]
 # View first rows
 nrow(df_primary)
 str(df_primary$Index)
+```
+
+```{r}
+write_xlsx(df_primary, "df_primary.xlsx")
 ```
 
 TRANSFORM EACH C-STATISTIC TO LOGIT SCALE FOR DEBRAY'S ADHERENCE
@@ -564,24 +568,13 @@ ggplot(sg, aes(x = est, y = reorder(group, est))) +
   theme_minimal(base_size = 11)
 ```
 
-## PAIRED QRISK VERSION COMPARISM
-
 ```{r}
-library(dplyr)
-library(stringr)
-library(tidyr)
-
-# Extract the six paired arms from df_all
-paired <- df_all %>% # create dataset of paired studies
-  filter(Index %in% c("19a", "19b", "26a", "26b", "29a", "29b")) %>% # select the paired studeis
-  mutate( # add new columns to existing ones
-    cohort  = str_extract(Author, "\\d+"),                       # 19, 26, 29
-    version = ifelse(str_detect(Author, "a$"), "QRISK2", "QRISK3")
-  )
-
-# VERIFY the a/b version mapping against the data's own version field
-paired %>% select(Author, cohort, version, QRISK_Version, Estimate, LowerCI, UpperCI)
+primary_subgroup_disease$Q.b.random
+primary_subgroup_disease$df.Q.b
+primary_subgroup_disease$pval.Q.b.random
 ```
+
+## PAIRED QRISK VERSION COMPARISM
 
 ```{r}
 library(dplyr)
@@ -625,7 +618,7 @@ wide <- wide %>%
   mutate(
     delta_logit    = logit_c_QRISK3 - logit_c_QRISK2,
     delta_cstat    = Estimate_QRISK3 - Estimate_QRISK2,
-    se_delta_indep = sqrt(se_logit_QRISK3^2 + se_logit_QRISK2^2)   # SE assuming independence
+    se_delta_indep = sqrt(se_logit_QRISK3^2 + se_logit_QRISK2^2) # SE assuming independence
   )
 
 # Present the paired comparison
@@ -815,12 +808,12 @@ df_primary_logit %>%
 library(dplyr)
 library(meta)
 
-fu_under10 <- c("1", "36", "3", "16", "40", "23")
+fu_under10 <- c("1", "36", "3", "16", "40", "23", "39")
 
 df_primary_logit <- df_primary_logit %>%
   mutate(Follow_group = ifelse(Index %in% fu_under10, "Under 10y", "10y or more"))
 
-table(df_primary_logit$FU_group)   #
+table(df_primary_logit$Follow_group, useNA = "ifany")
 
 sens_followup <- metagen(
   TE = logit_c, 
@@ -1109,4 +1102,44 @@ regplot(mr_sample_size, mod = "log_n", xlab = "log(sample size)",
 regplot(mr_rate, mod = "event_rate", xlab = "Event rate",
         ylab = "", main = "C", bg = "grey")
 dev.off()
+```
+
+```{r}
+pkgs <- c("meta", "metafor", "metamisc", "readxl", "writexl",
+          "dplyr", "stringr", "tidyr", "ggplot2", "gt")
+
+purpose <- c(
+  meta     = "primary pooling (metagen), subgroups, leave-one-out, funnel plot",
+  metafor  = "case-deletion diagnostics, Baujat plot, meta-regression (rma)",
+  metamisc = "reference implementation of the Debray framework (valmeta)",
+  readxl   = "data import",
+  writexl  = "data export",
+  dplyr    = "data preparation",
+  stringr  = "text parsing of the AUC field",
+  tidyr    = "data reshaping",
+  ggplot2  = "risk-of-bias figures",
+  gt       = "formatted tables"
+)
+
+env <- data.frame(
+  Package = pkgs,
+  Version = vapply(pkgs, function(p) as.character(packageVersion(p)), character(1)),
+  Purpose = purpose[pkgs],
+  row.names = NULL
+)
+
+cat("R version:", paste0(R.version$major, ".", R.version$minor), "\n")
+cat("Platform :", R.version$platform, "\n\n")
+print(env, right = FALSE)
+```
+
+```{r}
+sessionInfo()
+```
+
+```{r}
+citation()            # R itself
+citation("meta")
+citation("metafor")
+citation("metamisc")
 ```
